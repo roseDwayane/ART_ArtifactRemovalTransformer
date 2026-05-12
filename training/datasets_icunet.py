@@ -6,7 +6,7 @@ import torch
 from scipy import signal
 from torch.utils.data import Dataset
 import pickle
-from utils import partial_channel2
+from training.utils import partial_channel2
 
 epsilon = np.finfo(float).eps
 
@@ -132,8 +132,8 @@ class myDataset(Dataset):
         for i in range(19):
             #print(i, row[i])
             #print(data[row[i]].shape)
-            new_data.append(data[row[i]])        
-            new_data = np.array(new_data).astype(np.float)
+            new_data.append(data[row[i]])
+            new_data = np.array(new_data).astype(np.float64)
         '''
 
         #data = data.T

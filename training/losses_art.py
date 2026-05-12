@@ -1,9 +1,6 @@
-import time
-
 import torch
 import torch.nn as nn
 from torch.autograd import Variable
-from tf_utils import draw
 
 
 class LabelSmoothing(nn.Module):
@@ -11,7 +8,9 @@ class LabelSmoothing(nn.Module):
 
     def __init__(self, size, padding_idx, smoothing=0.0):
         super(LabelSmoothing, self).__init__()
-        self.criterion = nn.KLDivLoss(size_average=False)
+        # Older PyTorch used ``size_average=False``; the modern equivalent is
+        # ``reduction='sum'`` (the old kwarg has been removed).
+        self.criterion = nn.KLDivLoss(reduction='sum')
         self.padding_idx = padding_idx
         self.confidence = 1.0 - smoothing
         self.smoothing = smoothing

@@ -1,19 +1,19 @@
-torch==2.0.1
-torchvision==0.15.2
-torchaudio==2.0.2
-numpy==1.24.3
-scipy==1.10.1
-certifi==2023.5.7
-charset-normalizer==3.1.0
-filelock==3.12.0
-idna==3.4
-Jinja2==3.1.2
-MarkupSafe==2.1.2
-mpmath==1.3.0
-networkx==3.1
-Pillow==9.5.0
-requests==2.31.0
-sympy==1.12
+# Runtime requirements for the offline pipeline (main.py / utils.py) and the
+# ART/ training scripts. Tested on macOS with Python 3.10 / 3.12 and CPU-only
+# (Apple Silicon MPS is auto-detected when present).
+#
+# Mac install (CPU / MPS):
+#     pip install -r requirements.txt
+#
+# If you specifically need the CPU wheels of torch on Linux/Windows:
+#     pip install torch --index-url https://download.pytorch.org/whl/cpu
+#     pip install -r requirements.txt
+#
+# Pins are kept loose so a wider range of Python versions works; the lower
+# bounds are the lowest versions we have verified against.
 
-typing_extensions==4.6.2
-urllib3==2.0.2
+torch>=2.0
+numpy>=1.24
+scipy>=1.10
+matplotlib>=3.7
+seaborn>=0.12

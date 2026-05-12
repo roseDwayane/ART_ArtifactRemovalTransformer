@@ -1,29 +1,24 @@
 import os
 import torch
 import pickle
-#import Models.tiny_model as tiny_model
-import cumbersome_model
-#from Criteria import CrossEntropyLoss2d, FocalLoss
-import UNet_family
-import UNet_attention
+from art.models import icunet as cumbersome_model
+from art.models import icunet_pp as UNet_family
+from art.models import icunet_attn as UNet_attention
 import torch.nn as nn
-import torch.backends.cudnn as cudnn
-from myDataset import myDataset
-from loss_func import lossFunc, lossArch3, lossArch4, lossArch5
+from training.datasets_icunet import myDataset
+from training.losses_icunet import lossFunc, lossArch3, lossArch4, lossArch5
 import time
 import torch.optim.lr_scheduler
 import numpy as np
 from scipy import signal
-from utils import draw_raw, imgSave, numpy_SNR, draw_psd, SNR_cal
-#from dataGenerator import dataInit, dataDelete, dataRestore
-os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+from training.utils import draw_raw, imgSave, numpy_SNR, draw_psd, SNR_cal, SNR_cal2
+from art.device import DEVICE, ON_GPU
 
 def SNR(args, val_loader, model, epoch):
     model.eval()
     for i , (input, target, max_num) in enumerate(val_loader):
-        if args.onGPU == True:
-            input = input.cuda()
-            target = target.cuda()
+        input = input.to(DEVICE)
+        target = target.to(DEVICE)
 
         if args.model == "UNet_family":
             with torch.no_grad():
@@ -56,9 +51,8 @@ def draw_sub(args, val_loader, model, epoch):
 
     model.eval()
     for i, (input, target, max_num) in enumerate(val_loader):
-        if args.onGPU == True:
-            input = input.cuda()
-            target = target.cuda()
+        input = input.to(DEVICE)
+        target = target.to(DEVICE)
         with torch.no_grad():
             # run the mdoel
             decode1, decode2, decode3, decode4 = model(input)
@@ -122,9 +116,8 @@ def draw(args, val_loader, model, epoch):
 
     model.eval()
     for i, (input, target, max_num) in enumerate(val_loader):
-        if args.onGPU == True:
-            input = input.cuda()
-            target = target.cuda()
+        input = input.to(DEVICE)
+        target = target.to(DEVICE)
 
         if args.model=="UNet_family":
             with torch.no_grad():
@@ -173,21 +166,27 @@ def val(args, val_loader, model, criterion):
     model.eval()
 
     epoch_loss = []
+    epoch_lossList = []
+    epoch_SNR_i_t = []
+    epoch_SNR_i_o = []
 
     total_batches = len(val_loader)
     for i, (input, target, max_num) in enumerate(val_loader):
         start_time = time.time()
 
-        if args.onGPU == True:
-            input = input.cuda()    #myDataset.py -> attr
-            target = target.cuda()
+        input = input.to(DEVICE)  # myDataset.py -> attr
+        target = target.to(DEVICE)
 
         if args.model == 0 or args.model == 1 or args.model == 2:
             with torch.no_grad():
                 output = model(input)
             loss1, loss2, loss3, lossf, total_loss = lossFunc(args, output, target)
-            lossTotal = [loss1.item(), loss2.item(), loss3.item(), lossf.item(), total_loss.item()]
+            snr_i_t, snr_i_o = SNR_cal2(input, target, output)
+            lossList = [loss1.item(), loss2.item(), loss3.item(), lossf.item(), total_loss.item()]
             epoch_loss.append(total_loss)
+            epoch_lossList.append(lossList)
+            epoch_SNR_i_t.append(snr_i_t)
+            epoch_SNR_i_o.append(snr_i_o)
             time_taken = time.time() - start_time
             print('[%3d/%3d] loss1: %.8f loss2: %.8f loss3: %.8f lossf: %.8f\n'
                   'total_loss: %.8f time:%.8f'
@@ -198,26 +197,37 @@ def val(args, val_loader, model, criterion):
             with torch.no_grad():
                 output1, output2, output3 = model(input)
 
-            lossTotal, total_loss = lossArch3(args, output1, output2, output3, target, i, total_batches, start_time)
+            lossList, total_loss = lossArch3(args, output1, output2, output3, target, i, total_batches, start_time)
+            snr_i_t, snr_i_o = SNR_cal2(input, target, output3)
             epoch_loss.append(total_loss)
+            epoch_lossList.append([np.mean(lossList[0:4]), np.mean(lossList[5:9]), np.mean(lossList[10:14])])
+            epoch_SNR_i_t.append(snr_i_t)
+            epoch_SNR_i_o.append(snr_i_o)
 
         elif args.model == 4:
             with torch.no_grad():
-                output1, output2, output3, output4 = model(input)
-            lossTotal, total_loss = lossArch4(args, output1, output2, output3, output4, target, i, total_batches, start_time)
+                output1, output2, output3 = model(input)
+            lossList, total_loss = lossArch3(args, output1, output2, output3, target, i, total_batches, start_time)
+            snr_i_t, snr_i_o = SNR_cal2(input, target, output3)
             epoch_loss.append(total_loss)
+            epoch_lossList.append([np.mean(lossList[0:4]), np.mean(lossList[5:9]), np.mean(lossList[10:14])])
+            epoch_SNR_i_t.append(snr_i_t)
+            epoch_SNR_i_o.append(snr_i_o)
 
 
-        elif args.model == 5:
-            with torch.no_grad():
-                output1, output2, output3, output4, output5 = model(input)
-            lossTotal, total_loss = lossArch5(args, output1, output2, output3, output4, output5, target, i, total_batches, start_time)
-            epoch_loss.append(total_loss)
+    epoch_loss = torch.tensor(epoch_loss)
 
-    average_epoch_loss_val = sum(epoch_loss) / len(epoch_loss)
+    average_lossVal = torch.mean(epoch_loss)  # sum(epoch_loss) / len(epoch_loss)
+    stdev_lossVal = torch.std(epoch_loss)
+    average_lossList = np.nanmean(epoch_lossList,axis=0)
+    stdev_lossList = np.nanstd(epoch_lossList,axis=0)
+    average_SNR_i_t = np.nanmean(epoch_SNR_i_t)
+    stdev_SNR_i_t = np.nanstd(epoch_SNR_i_t)
+    average_SNR_i_o = np.nanmean(epoch_SNR_i_o)
+    stdev_SNR_i_o = np.nanstd(epoch_SNR_i_o)
 
 
-    return lossTotal, total_loss
+    return average_lossVal, stdev_lossVal, average_lossList, stdev_lossList, average_SNR_i_t, stdev_SNR_i_t, average_SNR_i_o, stdev_SNR_i_o
 
 def train(args, train_loader, model, criterion, optimizer, epoch):
     '''
@@ -233,20 +243,23 @@ def train(args, train_loader, model, criterion, optimizer, epoch):
     model.train()
 
     epoch_loss = []
+    epoch_SNR_i_t = []
+    epoch_SNR_i_o = []
 
     total_batches = len(train_loader)
     for i, (input, target, max_num) in enumerate(train_loader):
         #print("train: ", input.shape)
         start_time = time.time()
-        if args.onGPU:
-            input = input.cuda()
-            target = target.cuda()
+        input = input.to(DEVICE)
+        target = target.to(DEVICE)
 
         if args.model == 0 or args.model == 1 or args.model == 2:
             output = model(input)
             loss1, loss2, loss3, lossf, total_loss = lossFunc(args, output, target)
-
+            snr_i_t, snr_i_o = SNR_cal2(input, target, output)
             epoch_loss.append(total_loss)
+            epoch_SNR_i_t.append(snr_i_t)
+            epoch_SNR_i_o.append(snr_i_o)
             time_taken = time.time() - start_time
             print('[%3d/%3d] loss1: %.8f loss2: %.8f loss3: %.8f lossf: %.8f\n'
                   'total_loss: %.8f time:%.8f'
@@ -256,27 +269,40 @@ def train(args, train_loader, model, criterion, optimizer, epoch):
         elif args.model == 3:
             output1, output2, output3 = model(input)
             lossTotal, total_loss = lossArch3(args, output1, output2, output3, target, i, total_batches, start_time)
+            snr_i_t, snr_i_o = SNR_cal2(input, target, output3)
+            print("train_:", snr_i_t)
             epoch_loss.append(total_loss)
+            epoch_SNR_i_t.append(snr_i_t)
+            epoch_SNR_i_o.append(snr_i_o)
 
 
         elif args.model == 4:
-            output1, output2, output3, output4 = model(input)
-            lossTotal, total_loss = lossArch4(args, output1, output2, output3, output4, target, i, total_batches, start_time)
+            output1, output2, output3 = model(input)
+            lossTotal, total_loss = lossArch3(args, output1, output2, output3, target, i, total_batches, start_time)
+            snr_i_t, snr_i_o = SNR_cal2(input, target, output3)
             epoch_loss.append(total_loss)
+            epoch_SNR_i_t.append(snr_i_t)
+            epoch_SNR_i_o.append(snr_i_o)
 
 
-        elif args.model == 5:
-            output1, output2, output3, output4, output5 = model(input)
-            lossTotal, total_loss = lossArch5(args, output1, output2, output3, output4, output5, target, i, total_batches, start_time)
-            epoch_loss.append(total_loss)
 
         optimizer.zero_grad()
         total_loss.backward()
         optimizer.step()
 
-    average_epoch_loss_train = sum(epoch_loss) / len(epoch_loss)
+    epoch_loss = torch.tensor(epoch_loss)
 
-    return average_epoch_loss_train
+    average_epoch_loss_train = torch.mean(epoch_loss)#sum(epoch_loss) / len(epoch_loss)
+    stdev_epoch_loss_train = torch.std(epoch_loss)
+    average_SNR_i_t = np.nanmean(epoch_SNR_i_t)
+    stdev_SNR_i_t = np.nanstd(epoch_SNR_i_t)
+    average_SNR_i_o = np.nanmean(epoch_SNR_i_o)
+    stdev_SNR_i_o = np.nanstd(epoch_SNR_i_o)
+
+    average_epoch_loss_train = average_epoch_loss_train.cpu().detach().numpy()
+    stdev_epoch_loss_train = stdev_epoch_loss_train.cpu().detach().numpy()
+
+    return average_epoch_loss_train, stdev_epoch_loss_train, average_SNR_i_t, stdev_SNR_i_t, average_SNR_i_o, stdev_SNR_i_o
 
 def save_checkpoint(state, is_best, save_path):
     """
@@ -327,12 +353,14 @@ def trainValidateSegmentation(args):
     elif args.model == 1:
         model = cumbersome_model.UNet1(n_channels=30, n_classes=30, bilinear=True)
     elif args.model == 2:
-        model = cumbersome_model.UNet2(n_channels=30, n_classes=30, bilinear=True)
+        #model = cumbersome_model.UNet2(n_channels=30, n_classes=30, bilinear=True)
+        model = cumbersome_model.UNet1(n_channels=30, n_classes=30, bilinear=True)
     elif args.model == 3:
-        #model = UNet_family.NestedUNet3(num_classes=30)
-        model = UNet_attention.UNetpp3_Transformer(num_classes=30)
+        model = UNet_family.NestedUNet3(num_classes=30)
+        #model = UNet_attention.UNetpp3_Transformer(num_classes=30)
     elif args.model == 4:
-        model = UNet_family.NestedUNet4(num_classes=30)
+        #model = UNet_family.NestedUNet4(num_classes=30)
+        model = UNet_attention.UNetpp3_Transformer(num_classes=30)
     elif args.model == 5:
         model = UNet_family.NestedUNet5(num_classes=30)
 
@@ -340,9 +368,8 @@ def trainValidateSegmentation(args):
     total_paramters = netParams(model)
     print('Total network parameters: ' + str(total_paramters))
 
-    if args.onGPU:
-        # model = model.to(device)
-        model = model.cuda()
+    print(f"[INFO] training device = {DEVICE}")
+    model = model.to(DEVICE)
 
     # create the directory if not exist
     if not os.path.exists(args.save):
@@ -351,38 +378,17 @@ def trainValidateSegmentation(args):
     if not os.path.exists(args.savedir):
         os.mkdir(args.savedir)
 
-    # define optimization criteria
-    # weight = torch.from_numpy(data['classWeights']) # convert the numpy array to torch
-    # weight = torch.FloatTensor([0.500001, 0.5000001]) # convert the numpy array to torch
-    # if args.onGPU:
-    #     weight = weight.cuda()
+    criteria = nn.MSELoss().to(DEVICE)
 
-    criteria = nn.MSELoss()  #
-    # criteria = CrossEntropyLoss2d(weight) #weight
-    # criteria = FocalLoss(3, weight)
-
-    if args.onGPU:
-        criteria = criteria.cuda()
-
-    # since we training from scratch, we create data loaders at different scales
-    # so that we can generate more augmented data and prevent the network from overfitting
-
-    #trainLoader = torch.utils.data.DataLoader(
-    #    myDataLoader.MyDataset(data['trainIm'], data['trainAnnot'], (args.inWidth, args.inHeight), flag_aug=0),
-    #    batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers, pin_memory=True)
-    # ****#
-    # if args.onGPU:
-    #     cudnn.benchmark = True
-    torch.backends.cudnn.enabled = False
-    # ****#
+    if ON_GPU:
+        torch.backends.cudnn.enabled = False
 
     start_epoch = 0
 
-    if args.resume:  # 當機回復
+    if args.resume:  # resume from last checkpoint
         if os.path.isfile(args.resumeLoc):
             print("=> loading checkpoint '{}'".format(args.resume))
-            #checkpoint = torch.load(args.resumeLoc, map_location='cpu')
-            checkpoint = torch.load(args.resumeLoc, map_location='cpu')
+            checkpoint = torch.load(args.resumeLoc, map_location=DEVICE, weights_only=False)
             start_epoch = checkpoint['epoch']
             model.load_state_dict(checkpoint['state_dict'])
             print("=> loaded checkpoint '{}' (epoch {})"
@@ -396,8 +402,8 @@ def trainValidateSegmentation(args):
     else:
         logger = open(logFileLoc, 'w')
         logger.write("Parameters: %s" % (str(total_paramters)))
-        logger.write("\n%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t\t%s\t%s" % (
-            'Epoch', 'Loss(Tr)', 'Loss(Ts)', 'Loss(val)', 'Loss(val1-0_1)', 'Loss(val2-0_1)', 'Loss(val3-0_1)', 'Loss(val_f-0_1)', 'Loss(val-0_1)','Loss(val1-0_2)', 'Loss(val2-0_2)', 'Loss(val3-0_2)', 'Loss(val_f-0_2)', 'Loss(val-0_2)','Loss(val1-0_3)', 'Loss(val2-0_3)', 'Loss(val3-0_3)', 'Loss(val_f-0_3)', 'Loss(val-0_3)','Loss(val1-0_4)', 'Loss(val2-0_4)', 'Loss(val3-0_4)', 'Loss(val_f-0_4)', 'Loss(val-0_4)', 'Learning_rate', "Time", "i_t_std", "i_d_mean", "i_d_std"))
+        logger.write("\n%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s" % (
+            'Epoch', 'Loss(Tr)', 'Loss(val)', 'Loss(Ts)', 'Loss(Tr)std', 'Loss(val)std', 'Loss(Ts)std', 'Loss(0_1)', 'Loss(0_2)', 'Loss(0_3)', 'Loss(0_1)std', 'Loss(0_2)std','Loss(0_3)std', 'SNR(Tr_i_t)', 'SNR(val_i_t)', 'SNR(Ts_i_t)', 'SNR(Tr_i_t)std', 'SNR(val_i_t)std', 'SNR(Ts_i_t)std', 'SNR(Tr_i_o)', 'SNR(val_i_o)', 'SNR(Ts_i_o)', 'SNR(Tr_i_o)std', 'SNR(val_i_o)std', 'SNR(Ts_i_o)std', 'Learning_rate', "Time"))
     logger.flush()
     optimizer = torch.optim.SGD(model.parameters(), lr=args.lr, momentum=0.9, weight_decay=5e-4)
     # optimizer = torch.optim.Adam(model.parameters(), args.lr, (0.9, 0.999), eps=1e-08, weight_decay=5e-4)
@@ -437,27 +443,30 @@ def trainValidateSegmentation(args):
 
             #time.sleep(30)
 
-            lossTr = train(args, train_loader, model, criteria, optimizer, epoch)
+            lossTr, lossTrStd, snrTr_i_t, snrTr_i_tStd, snrTr_i_o, snrTr_i_oStd = train(args, train_loader, model, criteria, optimizer, epoch)
             #time.sleep(3)
             # evaluate on validation set
             # 改輸出檔案的LOSS
             # return of val func
             # lossTs
-            lossTs, totalLossTs= val(args, test_loader, model, criteria)
+            lossVal, lossValStd, listVal, listValStd, snrVal_i_t, snrVal_i_tStd, snrVal_i_o, snrVal_i_oStd = val(args, val_loader, model, criteria)
+            #lossVal, totalLossVal = val(args, val_loader, model, criteria)
+            # time.sleep(1)
+            lossTs, lossTsStd, listTs, listTsStd, snrTs_i_t, snrTs_i_tStd, snrTs_i_o, snrTs_i_oStd = val(args, test_loader, model, criteria)
+            #lossTs, totalLossTs= val(args, test_loader, model, criteria)
             #time.sleep(1)
-            lossVal, totalLossVal = val(args, val_loader, model, criteria)
-            #time.sleep(1)
+
 
             #draw(args, test_loader, model, epoch)
             #draw_sub(args, train_loader, model, start_epoch)
             #draw(args, val_loader, model, epoch)
             #tmean, tstd, dmean, dstd = SNR(args, train_loader, model, epoch)
-            tmean, tstd, dmean, dstd = [0, 0, 0, 0]
+            #tmean, tstd, dmean, dstd = [0, 0, 0, 0]
             #print(tmean, tstd, dmean, dstd)
 
             # Did validation loss improve?
-            is_best = totalLossTs < best_loss
-            best_loss = min(totalLossTs, best_loss)
+            is_best = lossVal < best_loss
+            best_loss = min(lossVal, best_loss)
 
             if not is_best:
                 epochs_since_improvement += 1
@@ -473,41 +482,39 @@ def trainValidateSegmentation(args):
                      'best_loss': best_loss,
                      'state_dict': model.state_dict(),
                      'lossTr': lossTr,
-                     'lossTs': totalLossTs,
-                     'lossVal': totalLossVal,
+                     'lossTs': lossTs,
+                     'lossVal': lossVal,
                      ' lr': lr}
             save_checkpoint(state, is_best, args.savedir)
             # modified %.4f\t\t * 16
 
             print("\nEpoch : " + str(epoch) + ' Details:')
             print("Epoch No.: %d/%d\tTrain Loss = %.8f\tVal Loss = %.8f" % (
-                epoch, args.max_epochs, lossTr, totalLossVal))
+                epoch, args.max_epochs, lossTr, lossVal))
             time_taken = time.time() - start_time
             print("Time: ", time_taken)
 
             if args.model == 0 or args.model == 1 or args.model == 2:
-                logger.write("\n%d\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f" % (
-                epoch, lossTr, totalLossTs, totalLossVal, lossVal[0], lossVal[1], lossVal[2], lossVal[3], lr, time_taken, tstd, dmean, dstd))
+                logger.write("\n%d\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f" % (
+                    epoch, lossTr, lossVal, lossTs, lossTrStd, lossValStd, lossTsStd,
+                            snrTr_i_t, snrVal_i_t, snrTs_i_t, snrTr_i_tStd, snrVal_i_tStd, snrTs_i_tStd,
+                            snrTr_i_o, snrVal_i_o, snrTs_i_o, snrTr_i_oStd, snrVal_i_oStd, snrTs_i_oStd,
+                    lr, time_taken))
 
             elif args.model == 3:
-                logger.write("\n%d\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f" % (
-                epoch, lossTr, totalLossTs, totalLossVal, lossVal[0], lossVal[1], lossVal[2], lossVal[3], lossVal[4],
-                            lossVal[5], lossVal[6], lossVal[7], lossVal[8], lossVal[9],
-                            lossVal[10], lossVal[11], lossVal[12], lossVal[13], lossVal[14],
-                            lr, time_taken, tstd, dmean, dstd))
+                logger.write("\n%d\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f" % (
+                    epoch, lossTr, lossVal, lossTs, lossTrStd, lossValStd, lossTsStd,
+                            listTs[0], listTs[1], listTs[2], listTsStd[0], listTsStd[1], listTsStd[2],
+                            snrTr_i_t, snrVal_i_t, snrTs_i_t, snrTr_i_tStd, snrVal_i_tStd, snrTs_i_tStd,
+                            snrTr_i_o, snrVal_i_o, snrTs_i_o, snrTr_i_oStd, snrVal_i_oStd, snrTs_i_oStd,
+                    lr, time_taken))
             elif args.model == 4:
-                logger.write("\n%d\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f" % (
-                epoch, lossTr, totalLossTs, totalLossVal, lossVal[0], lossVal[1], lossVal[2], lossVal[3], lossVal[4],
-                            lossVal[5], lossVal[6], lossVal[7], lossVal[8], lossVal[9],
-                            lossVal[10], lossVal[11], lossVal[12], lossVal[13], lossVal[14],
-                            lossVal[15], lossVal[16], lossVal[17], lossVal[18], lossVal[19], lr, time_taken, tstd, dmean, dstd))
-            elif args.model == 5:
-                logger.write("\n%d\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f" % (
-                epoch, lossTr, totalLossTs, totalLossVal, lossVal[0], lossVal[1], lossVal[2], lossVal[3], lossVal[4],
-                            lossVal[5], lossVal[6], lossVal[7], lossVal[8], lossVal[9],
-                            lossVal[10], lossVal[11], lossVal[12], lossVal[13], lossVal[14],
-                            lossVal[15], lossVal[16], lossVal[17], lossVal[18], lossVal[19],
-                            lossVal[20], lossVal[21], lossVal[22], lossVal[23], lossVal[24], lr, time_taken, tstd, dmean, dstd))
+                logger.write("\n%d\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f" % (
+                    epoch, lossTr, lossVal, lossTs, lossTrStd, lossValStd, lossTsStd,
+                            listTs[0], listTs[1], listTs[2], listTsStd[0], listTsStd[1], listTsStd[2],
+                            snrTr_i_t, snrVal_i_t, snrTs_i_t, snrTr_i_tStd, snrVal_i_tStd, snrTs_i_tStd,
+                            snrTr_i_o, snrVal_i_o, snrTs_i_o, snrTr_i_oStd, snrVal_i_oStd, snrTs_i_oStd,
+                    lr, time_taken))
 
             logger.flush()
 
@@ -523,11 +530,11 @@ def trainValidateSegmentation(args):
     logger.close()
 
 class model_train_parameter():
-    def __init__(self, loss, save, data, train_len, arch_num):
-        self.model = 3 #arch_num # cumbersome_model UNet_family change to UNET++
-        self.block_num = arch_num
-        self.max_epochs = 60
-        self.num_workers = 0
+    def __init__(self, loss, save, data, train_len, arch_num, block):
+        self.model = arch_num # cumbersome_model UNet_family change to UNET++
+        self.block_num = block
+        self.max_epochs = 61
+        self.num_workers = 3
         self.batch_size = 128
         self.sample_rate = 256
         self.step_loss = 100  # Decrease learning rate after how many epochs.
@@ -543,23 +550,24 @@ class model_train_parameter():
         self.resumeLoc = self.save + '/modelsave/checkpoint.pth.tar'
         self.classes = 2  # No of classes in the dataset.
         self.logFile = 'model_trainValLog.txt'  # File that stores the training and validation logs
-        self.onGPU = True  # Run on CPU or GPU. If TRUE, then GPU.
+        self.onGPU = ON_GPU  # Auto-detected; True only when CUDA is available.
         self.pretrained = ''  # Pretrained model
         self.loadpickle = './'
 
 
 
 def main_train():
-    for i in range(14):
-        #i = i+5
-        name = "0329"
+    for i in range(1):
+        i = i+4
+        name = "1018"
         #dataRestore(name)
-        trainValidateSegmentation(args=model_train_parameter([1, 1, 1, 1], './' + name + '_RealEEG_1_' + str(i), "./" + name + "_simulate_data/", 39200, i))
-        #trainValidateSegmentation(args=model_train_parameter([1, 1, 1, 1], './' + name + '_RealEEG_2_' + str(i), "./" + name + "_simulate_data/", 20000, i))
-        #trainValidateSegmentation(args=model_train_parameter([1, 1, 1, 1], './' + name + '_RealEEG_3_' + str(i), "./" + name + "_simulate_data/", 10000, i))
-        #trainValidateSegmentation(args=model_train_parameter([1, 1, 1, 1], './' + name + '_RealEEG_4_' + str(i), "./" + name + "_simulate_data/", 5000, i))
-        #trainValidateSegmentation(args=model_train_parameter([1, 1, 1, 1], './' + name + '_RealEEG_5_' + str(i), "./" + name + "_simulate_data/", 2500, i))
-        #dataDelete("./" + name + "_simulate_data/")
+        for j in range(2):
+            trainValidateSegmentation(args=model_train_parameter([1, 1, 1, 1], './' + name + '_RealEEG_'+ str(i) + '_' + str(j), "./" + name + "_simulate_data/", 39200, i, j))
+            #trainValidateSegmentation(args=model_train_parameter([1, 1, 1, 1], './' + name + '_RealEEG_2_' + str(i), "./" + name + "_simulate_data/", 20000, i))
+            #trainValidateSegmentation(args=model_train_parameter([1, 1, 1, 1], './' + name + '_RealEEG_3_' + str(i), "./" + name + "_simulate_data/", 10000, i))
+            #trainValidateSegmentation(args=model_train_parameter([1, 1, 1, 1], './' + name + '_RealEEG_4_' + str(i), "./" + name + "_simulate_data/", 5000, i))
+            #trainValidateSegmentation(args=model_train_parameter([1, 1, 1, 1], './' + name + '_RealEEG_5_' + str(i), "./" + name + "_simulate_data/", 2500, i))
+            #dataDelete("./" + name + "_simulate_data/")
 
 if __name__ == '__main__':
     main_train()

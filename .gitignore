@@ -212,9 +212,16 @@ __marimo__/
 .vscode/
 
 # Project-local
-node_modules/
-tools/weekly_deck/_test/
-weekly/*/output/*.pdf
+modelsave/
 
 # Local EEG data caches (OpenNeuro / S3 downloads)
 data/
+
+# Training artifacts that should never be committed
+Real_EEG/
+MetaPreTrain/
+smoke_*/
+*.zip
+
+# Model checkpoints are downloaded by the user — never committed.
+checkpoints/
