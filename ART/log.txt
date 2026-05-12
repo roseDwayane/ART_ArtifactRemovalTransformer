@@ -1,0 +1,17 @@
+0223: 0~4 (UNet++, block1, 3, 5, 7, 9)
+0301: 0~4 (Transformer, block1, 3, 5, 7, 9)
+0314: 0 (Transformer, no block)
+0322: 5~12 (Transformer, block 11, 13, 15, 17, 19, 21, 23, 25)
+0420: 2.IC-U-Net(0:no, 1:block), 3.U-Net++(0:no, 1:block), 4.Atten(0:no, 1:block) -> channel domain attention + Position Encoding
+0612: Atten(0:no, 1:block) -> time domain attention + Position Encoding
+0626: Atten(0:no, 1:block) -> time domain attention
+0627: Atten(0:no, 1:block) -> channel domain attention
+0814: Transformer First Time
+0816: Transformer Pre-train model
+0908: Transformer fine-tune input: noise, output: clean
+0913: Transformer Pre-train + fine-tune (old)
+0914: Transformer Pre-train renew data -> input: n data, output: n+4 data
+0915: Transformer fine-tune renew input: noise, output: noise
+0916: Transformer fine-tune renew input: noise, output: 111..
+0928: Transformer Pre-train model
+1010: Transformer Pre-train + fine-tune (success)
